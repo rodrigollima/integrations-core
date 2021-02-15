@@ -159,6 +159,7 @@ def _init_datadog_sample_collection(conn):
     cur.execute("GRANT CREATE TEMPORARY TABLES ON `datadog`.* TO 'dog'@'%'")
     _create_explain_procedure(conn, "datadog")
     _create_explain_procedure(conn, "mysql")
+    _create_enable_consumers_procedure(conn)
 
 
 def _create_explain_procedure(conn, schema):
@@ -182,12 +183,33 @@ def _create_explain_procedure(conn, schema):
     cur.close()
 
 
+def _create_enable_consumers_procedure(conn):
+    logger.debug("creating enable_events_statements_consumers procedure")
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE PROCEDURE datadog.enable_events_statements_consumers()
+            SQL SECURITY DEFINER
+        BEGIN
+            UPDATE performance_schema.setup_consumers SET enabled='YES' WHERE name LIKE 'events_statements_%';
+        END;
+    """)
+    cur.execute("GRANT EXECUTE ON PROCEDURE datadog.enable_events_statements_consumers to 'dog'@'%'")
+    cur.close()
+
+
 def init_master():
     logger.debug("initializing master")
     conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
     _add_dog_user(conn)
     _add_bob_user(conn)
     _init_datadog_sample_collection(conn)
+
+
+@pytest.fixture
+def root_conn():
+    conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
+    yield conn
+    conn.close()
 
 
 def init_slave():
@@ -215,6 +237,13 @@ def _add_bob_user(conn):
     cur = conn.cursor()
     cur.execute("CREATE USER 'bob'@'%' IDENTIFIED BY 'bob'")
     cur.execute("GRANT USAGE on *.* to 'bob'@'%'")
+
+
+@pytest.fixture
+def bob_conn():
+    conn = pymysql.connect(host=common.HOST, port=common.PORT, user='bob', password='bob')
+    yield conn
+    conn.close()
 
 
 def populate_database():

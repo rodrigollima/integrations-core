@@ -234,6 +234,9 @@ class MySQLStatementSamples(object):
         self._events_statements_temp_table = self._config.statement_samples_config.get(
             'events_statements_temp_table_name', 'datadog.temp_events'
         )
+        self._events_statements_enable_procedure = self._config.statement_samples_config.get(
+            'events_statements_enable_procedure', 'datadog.enable_events_statements_consumers'
+        )
         self._preferred_events_statements_tables = EVENTS_STATEMENTS_PREFERRED_TABLES
         self._has_window_functions = False
         events_statements_table = self._config.statement_samples_config.get('events_statements_table', None)
@@ -288,7 +291,7 @@ class MySQLStatementSamples(object):
         self._tags_str = ','.join(tags)
         for t in self._tags:
             if t.startswith('service:'):
-                self._service = t[len('service:') :]
+                self._service = t[len('service:'):]
         if not self._version_processed and self._check.version:
             self._has_window_functions = self._check.version.version_compatible((8, 0, 0))
             if self._check.version.flavor == "MariaDB" or not self._check.version.version_compatible((5, 7, 0)):
@@ -320,7 +323,7 @@ class MySQLStatementSamples(object):
             try:
                 self._db.close()
             except Exception:
-                self._log.exception("Failed to close db connection")
+                self._log.debug("Failed to close db connection", exc_info=1)
 
     def collection_loop(self):
         try:
@@ -526,6 +529,18 @@ class MySQLStatementSamples(object):
             self._cursor_run(cursor, ENABLED_STATEMENTS_CONSUMERS_QUERY)
             return set([r[0] for r in cursor.fetchall()])
 
+    def _enable_events_statements_consumers(self):
+        """
+        Enable events statements consumers
+        :return:
+        """
+        try:
+            with closing(self._get_db_connection().cursor()) as cursor:
+                self._cursor_run(cursor, 'CALL {}()'.format(self._events_statements_enable_procedure))
+        except pymysql.err.DatabaseError as e:
+            self._log.debug("failed to enable events_statements consumers using procedure=%s: %s",
+                            self._events_statements_enable_procedure, e)
+
     def _get_sample_collection_strategy(self):
         """
         Decides on the plan collection strategy:
@@ -539,6 +554,10 @@ class MySQLStatementSamples(object):
             return cached_strategy
 
         enabled_consumers = self._get_enabled_performance_schema_consumers()
+        if len(enabled_consumers) < 3:
+            self._enable_events_statements_consumers()
+            enabled_consumers = self._get_enabled_performance_schema_consumers()
+
         if not enabled_consumers:
             self._log.warning(
                 "Cannot collect statement samples as there are no enabled performance_schema.events_statements_* "
@@ -677,11 +696,10 @@ class MySQLStatementSamples(object):
                 if plan:
                     self._collection_strategy_cache[strategy_cache_key] = strategy
                     self._log.debug(
-                        'Successfully collected execution plan. strategy=%s, schema=%s, statement="%s", plan="%s"',
+                        'Successfully collected execution plan. strategy=%s, schema=%s, statement="%s"',
                         strategy,
                         schema,
-                        obfuscated_statement,
-                        plan,
+                        obfuscated_statement
                     )
                     self._check.histogram(
                         "dd.mysql.run_explain.time",

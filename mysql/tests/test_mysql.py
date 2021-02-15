@@ -11,7 +11,6 @@ from os import environ
 
 import mock
 import psutil
-import pymysql
 import pytest
 from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 from datadog_checks.base.utils.platform import Platform
@@ -22,13 +21,6 @@ from pkg_resources import parse_version
 
 from . import common, tags, variables
 from .common import MYSQL_VERSION_PARSED
-
-
-@pytest.fixture
-def bob_conn():
-    conn = pymysql.connect(host=common.HOST, port=common.PORT, user='bob', password='bob')
-    yield conn
-    conn.close()
 
 
 @pytest.fixture
@@ -453,6 +445,33 @@ def test_statement_samples_invalid_explain_procedure(aggregator, dbm_instance):
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[dbm_instance])
     mysql_check.check(dbm_instance)
     aggregator.assert_metric_has_tag_prefix("dd.mysql.statement_samples.error", "error:explain-")
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures('dd_environment')
+@pytest.mark.parametrize("events_statements_enable_procedure",
+                         ["datadog.enable_events_statements_consumers", "invalid_proc"])
+def test_statement_samples_enable_consumers(dbm_instance, root_conn, events_statements_enable_procedure):
+    dbm_instance['statement_samples']['run_sync'] = True
+    dbm_instance['statement_samples']['events_statements_enable_procedure'] = events_statements_enable_procedure
+    mysql_check = MySql(common.CHECK_NAME, {}, instances=[dbm_instance])
+
+    # deliberately disable one of the consumers
+    with closing(root_conn.cursor()) as cursor:
+        cursor.execute(
+            "UPDATE performance_schema.setup_consumers SET enabled='NO'  WHERE name = "
+            "'events_statements_history_long';")
+
+    original_enabled_consumers = mysql_check._statement_samples._get_enabled_performance_schema_consumers()
+    assert original_enabled_consumers == {'events_statements_current', 'events_statements_history'}
+
+    mysql_check.check(dbm_instance)
+
+    enabled_consumers = mysql_check._statement_samples._get_enabled_performance_schema_consumers()
+    if events_statements_enable_procedure == "datadog.enable_events_statements_consumers":
+        assert enabled_consumers == original_enabled_consumers.union({'events_statements_history_long'})
+    else:
+        assert enabled_consumers == original_enabled_consumers
 
 
 def _test_optional_metrics(aggregator, optional_metrics, at_least):
