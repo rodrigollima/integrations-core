@@ -324,6 +324,8 @@ class MySQLStatementSamples(object):
                 self._db.close()
             except Exception:
                 self._log.debug("Failed to close db connection", exc_info=1)
+            finally:
+                self._db = None
 
     def collection_loop(self):
         try:
@@ -351,6 +353,7 @@ class MySQLStatementSamples(object):
                 tags=self._tags + ["error:collection-loop-crash-{}".format(type(e))],
             )
         finally:
+            self._log.info("Shutting down statement sampler collection loop")
             self.close()
 
     def _cursor_run(self, cursor, query, params=None, obfuscated_params=None):
